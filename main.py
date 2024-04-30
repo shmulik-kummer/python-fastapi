@@ -1,4 +1,5 @@
 from fastapi import FastAPI
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 import itertools
 
@@ -44,8 +45,8 @@ def find_post(post_id: int):
 def get_post_by_id(post_id: int):
     post = find_post(post_id)
     if post is None:
-        return {"error": f"Post with ID {post_id} not found"}
-    else:
-        return post
+        error_message = {"error": f"Post with ID {post_id} not found"}
+        return JSONResponse(content=error_message, status_code=404, media_type="application/json")
+    return post
 
     
