@@ -1,5 +1,4 @@
-from fastapi import FastAPI
-from fastapi.responses import JSONResponse
+from fastapi import FastAPI, HTTPException, Response,status
 from pydantic import BaseModel
 import itertools
 
@@ -7,6 +6,10 @@ import itertools
 def id_generator():
     return itertools.count(1)
 get_next_id = id_generator()
+
+def raise_not_found_error(post_id: int):
+    error_message = f"Post with ID {post_id} not found"
+    raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=error_message)
 
 app = FastAPI()
 
@@ -26,7 +29,7 @@ async def root():
 def get_posts():
     return {"data": my_posts}
 
-@app.post("/posts")  # Corrected the route and method
+@app.post("/posts", status_code=201)
 def create_post(new_post: Post):
     post_dict = new_post.model_dump()
     post_dict['id'] = next(get_next_id)
@@ -39,14 +42,35 @@ def find_post(post_id: int):
     for post in my_posts:
         if post['id'] == post_id:
             return post
-    return None
+    raise_not_found_error(post_id)
 
 @app.get("/posts/{post_id}")
 def get_post_by_id(post_id: int):
-    post = find_post(post_id)
-    if post is None:
-        error_message = {"error": f"Post with ID {post_id} not found"}
-        return JSONResponse(content=error_message, status_code=404, media_type="application/json")
-    return post
+    try:
+        post = find_post(post_id)
+        return post
+    except HTTPException as e:
+        raise e
 
-    
+
+def find_index_post(post_id: int):
+    for index, post in enumerate(my_posts):
+        if post['id'] == post_id:
+            return index
+    raise_not_found_error(post_id)
+
+
+@app.delete("/posts/{post_id}")
+def delete_post(post_id: int):
+    index = find_index_post(post_id)
+    my_posts.pop(index)
+    return Response(status_code = status.HTTP_204_NO_CONTENT)
+
+
+@app.put('/posts/{post_id}')
+def update_post(post_id: int, post: Post):
+    index = find_index_post(post_id)
+    post_dict = post.model_dump()
+    post_dict['id'] = post_id
+    my_posts[index] = post_dict
+    return post_dict
