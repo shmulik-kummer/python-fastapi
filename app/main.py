@@ -1,15 +1,13 @@
 import time
-from typing import Optional
-
-from fastapi import FastAPI, HTTPException, Response, status
-from pydantic import BaseModel, Field
+from fastapi import FastAPI, HTTPException, Response, status, Depends
 import itertools
 import psycopg
 from psycopg.rows import dict_row
-import logging
-
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+from sqlalchemy.orm import Session
+from . import models
+from .database import get_db, engine
+from .schemas import PostCreate, PostResponse
+from .models import Post
 
 
 def create_db_connection(dbname, user, password, host, port):
@@ -43,14 +41,9 @@ def raise_not_found_error(post_id: int):
     raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=error_message)
 
 
+models.Base.metadata.create_all(bind=engine)
+
 app = FastAPI()
-
-
-class Post(BaseModel):
-    id: int = Field(default_factory=lambda: next(get_next_id))
-    title: str
-    content: str
-    published: Optional[bool] = True
 
 
 @app.get("/")
@@ -59,53 +52,65 @@ async def root():
 
 
 @app.get("/posts")
-def get_posts():
-    cursor.execute('''SELECT * from posts''')
-    posts = cursor.fetchall()
-    return {"data": posts}
+def get_posts(db: Session = Depends(get_db)):
+    try:
+        posts = db.query(models.Post).all()
+        return posts
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.post("/posts", status_code=status.HTTP_201_CREATED)
-def create_post(post: Post):
-    cursor.execute(''' INSERT into posts (title, content, published) VALUES (%s, %s, %s) RETURNING * ''',
-                   (post.title, post.content, post.published))
-    new_post = cursor.fetchone()
-    return {"data": new_post}
+@app.post("/posts", status_code=status.HTTP_201_CREATED, response_model=PostResponse)
+def create_post(post: PostCreate, db: Session = Depends(get_db)):
+    new_post = Post(**post.dict())
+
+    db.add(new_post)
+    db.commit()
+    db.refresh(new_post)
+
+    return new_post
 
 
 @app.get("/posts/{post_id}")
-def get_post_by_id(post_id: int):
+def get_post_by_id(post_id: int, db: Session = Depends(get_db)):
     try:
-        cursor.execute("SELECT * FROM posts WHERE id = %s", (post_id,))
-        post = cursor.fetchone()
+        post = db.query(Post).filter(Post.id == post_id).first()
         if not post:
             raise_not_found_error(post_id)
-        return {"data": post}
+        return post
     except HTTPException as e:
         raise e
 
 
-@app.delete("/posts/{post_id}")
-def delete_post(post_id: int):
-    try:
-        # Check if the post exists
-        get_post_by_id(post_id)
-        cursor.execute('''DELETE FROM posts WHERE id = %s returning *''', (post_id,))
-        return Response(status_code=status.HTTP_204_NO_CONTENT)
+@app.delete("/posts/{post_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_post(post_id: int, db: Session = Depends(get_db)):
+    post = db.query(Post).filter(Post.id == post_id).first()
+    if not post:
+        raise_not_found_error(post_id)
 
-    except HTTPException as e:
-        raise e
+    # Delete the post
+    db.delete(post)
+    db.commit()
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @app.put('/posts/{post_id}')
-def update_post(post_id: int, updated_post: Post):
-    try:
-        # Check if the post exists
-        get_post_by_id(post_id)
-        cursor.execute('''UPDATE posts SET title = %s, content = %s, published = %s RETURNING * ''',
-                       (updated_post.title, updated_post.content, updated_post.published))
-        updated_post = cursor.fetchone()
-        return {"data": updated_post}
+def update_post(post_id: int, updated_post: PostCreate, db: Session = Depends(get_db)):
+    # Query for the existing post
+    post_query = db.query(Post).filter(Post.id == post_id)
+    post = post_query.first()
 
-    except HTTPException as e:
-        raise e
+    if not post:
+        raise_not_found_error(post_id)
+
+    # Update the post using the data provided
+    post_query.update(updated_post.dict(exclude_unset=True), synchronize_session='fetch')
+
+    # Commit the changes to the database
+    db.commit()
+
+    # Refresh the instance to ensure it's updated
+    db.refresh(post)
+
+    # Return the updated post
+    return post
